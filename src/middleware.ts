@@ -63,6 +63,6 @@ function addCorsHeaders(response: NextResponse, request: NextRequest) {
 
 // Configure which routes the middleware should run on
 export const config = {
-  matcher: '/api/v1/:path*',
+  matcher: '/api/:path*',
 };
 
