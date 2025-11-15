@@ -1,5 +1,4 @@
 import { parse } from 'csv-parse/sync';
-import fs from 'node:fs';
 import { ContentPerformance } from '../entities/ContentPerformance';
 import { PlayerHistory } from '../entities/PlayerHistory';
 
@@ -43,17 +42,16 @@ function parseNumber(value: string | undefined | null): number | null {
 }
 
 /**
- * Process content_performance.csv file
+ * Process content_performance.csv from string content
  */
 export async function processContentPerformanceCSV(
-  filePath: string
+  csvContent: string
 ): Promise<{ records: ContentPerformance[]; errors: string[] }> {
   const errors: string[] = [];
   const records: ContentPerformance[] = [];
 
   try {
-    const fileContent = fs.readFileSync(filePath, 'utf-8');
-    const parsed = parse(fileContent, {
+    const parsed = parse(csvContent, {
       columns: true,
       skip_empty_lines: true,
       trim: true,
@@ -83,24 +81,23 @@ export async function processContentPerformanceCSV(
       }
     }
   } catch (error) {
-    errors.push(`Failed to read file: ${error instanceof Error ? error.message : String(error)}`);
+    errors.push(`Failed to parse CSV: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   return { records, errors };
 }
 
 /**
- * Process player_history.csv file
+ * Process player_history.csv from string content
  */
 export async function processPlayerHistoryCSV(
-  filePath: string
+  csvContent: string
 ): Promise<{ records: PlayerHistory[]; errors: string[] }> {
   const errors: string[] = [];
   const records: PlayerHistory[] = [];
 
   try {
-    const fileContent = fs.readFileSync(filePath, 'utf-8');
-    const parsed = parse(fileContent, {
+    const parsed = parse(csvContent, {
       columns: true,
       skip_empty_lines: true,
       trim: true,
@@ -143,7 +140,7 @@ export async function processPlayerHistoryCSV(
       }
     }
   } catch (error) {
-    errors.push(`Failed to read file: ${error instanceof Error ? error.message : String(error)}`);
+    errors.push(`Failed to parse CSV: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   return { records, errors };

@@ -45,4 +45,8 @@ next-env.d.ts
 *.sqlite3
 *.db
 
+# logs
+/logs
+*.log
+
 assets/
