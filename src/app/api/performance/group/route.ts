@@ -4,6 +4,7 @@ import { StatusCodes } from 'http-status-codes';
 import { initializeDatabase } from '@/src/lib/db/database';
 import { AppDataSource } from '@/src/data-source';
 import { ContentPerformance } from '@/src/entities/ContentPerformance';
+import { PlayerHistory } from '@/src/entities/PlayerHistory';
 import { calculateGroupKPI, GroupPerformanceKPI } from '@/src/utils/performanceCalculator';
 import { withApiLogging, logger } from '@/src/lib/logger';
 import { ApiResponse } from '@/src/lib/common/ApiResponse';
@@ -109,22 +110,36 @@ async function handleGET(request: NextRequest): Promise<NextResponse<ApiResponse
     const queryParams = parseQueryParams(request);
     logger.debug('Performance group API query parameters', queryParams);
 
-    // Fetch all content performance records
+    // Fetch data from both tables
     const contentRepo = AppDataSource.getRepository(ContentPerformance);
-    const allRecords = await contentRepo.find();
+    const playerRepo = AppDataSource.getRepository(PlayerHistory);
+    
+    const allContentRecords = await contentRepo.find();
+    const allPlayerRecords = await playerRepo.find();
 
-    if (allRecords.length === 0) {
+    // Count total impressions per content_id from PlayerHistory table
+    const impressionsByContentId = new Map<string, number>();
+    for (const record of allPlayerRecords) {
+      if (record.content_id) {
+        const currentCount = impressionsByContentId.get(record.content_id) || 0;
+        impressionsByContentId.set(record.content_id, currentCount + 1);
+      }
+    }
+
+    // If no player history data (impressions), return empty
+    // Performance KPIs require impressions as the denominator for calculating rates
+    if (impressionsByContentId.size === 0) {
       return NextResponse.json<ApiResponse<GroupPerformanceKPI[]>>({
         success: true,
         status_code: StatusCodes.OK,
-        message: 'No content performance data found',
+        message: 'No player history data found. Performance KPIs require impressions from player_history table.',
         data: [],
       });
     }
 
-    // Group records by content_group
+    // Group ContentPerformance records by content_group
     const recordsByGroup = new Map<string, ContentPerformance[]>();
-    for (const record of allRecords) {
+    for (const record of allContentRecords) {
       const groupName = record.content_group || 'Unknown';
       if (!recordsByGroup.has(groupName)) {
         recordsByGroup.set(groupName, []);
@@ -133,14 +148,27 @@ async function handleGET(request: NextRequest): Promise<NextResponse<ApiResponse
     }
 
     // Calculate aggregated KPIs for each content_group
+    // Combine data from both tables as per task_analysis.md requirements
+    // Only include groups that have impressions (required for KPI calculation)
     const groupKPIs: GroupPerformanceKPI[] = [];
     for (const [groupName, records] of recordsByGroup.entries()) {
-      const groupKPI = calculateGroupKPI(groupName, records);
-      groupKPIs.push(groupKPI);
+      // Sum up impressions for all content_ids in this group from PlayerHistory
+      const groupContentIds = new Set(records.map((r) => r.content_id));
+      let totalImpressionsForGroup = 0;
+      for (const contentId of groupContentIds) {
+        totalImpressionsForGroup += impressionsByContentId.get(contentId) || 0;
+      }
+      
+      // Only include groups that have impressions (totalImpressionsForGroup > 0)
+      // Without impressions, rates cannot be calculated meaningfully
+      if (totalImpressionsForGroup > 0) {
+        const groupKPI = calculateGroupKPI(groupName, totalImpressionsForGroup, records);
+        groupKPIs.push(groupKPI);
+      }
     }
 
     // Apply sorting
-    let sortedKPIs = sortGroupKPIs(groupKPIs, queryParams.sortBy, queryParams.order);
+    const sortedKPIs = sortGroupKPIs(groupKPIs, queryParams.sortBy, queryParams.order);
 
     // Apply pagination
     const paginatedKPIs = paginate(sortedKPIs, queryParams.limit, queryParams.offset);

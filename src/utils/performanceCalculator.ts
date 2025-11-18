@@ -20,17 +20,42 @@ export interface GroupPerformanceKPI {
 
 /**
  * Calculate KPIs for a single content_id from its records
+ * 
+ * According to task_analysis.md:
+ * - Total Impressions: Count from player_history.csv (PlayerHistory table)
+ * - Attention Rate: (is_attention count from content_performance.csv) / (Total Impressions)
+ * - Entrance Rate: (is_entrance count from content_performance.csv) / (Total Impressions)
+ * 
+ * @param contentId - The content ID to calculate KPIs for
+ * @param totalImpressions - Total impressions count from PlayerHistory table
+ * @param records - ContentPerformance records for this content_id
  */
 export function calculateContentKPI(
   contentId: string,
+  totalImpressions: number,
   records: ContentPerformance[]
 ): ContentPerformanceKPI {
-  const totalImpressions = records.length;
+  // Count attention and entrance from ContentPerformance records
   const attentionCount = records.filter((r) => r.is_attention === true).length;
   const entranceCount = records.filter((r) => r.is_entrance === true).length;
 
+  // Calculate rates using total impressions from PlayerHistory as denominator
   const attentionRate = totalImpressions > 0 ? attentionCount / totalImpressions : 0;
   const entranceRate = totalImpressions > 0 ? entranceCount / totalImpressions : 0;
+
+  // Debug logging to help diagnose rate calculation issues
+  if (totalImpressions > 0) {
+    console.log(`KPI Calculation for content_id: ${contentId}`, {
+      totalImpressions,
+      contentPerformanceRecords: records.length,
+      attentionCount,
+      entranceCount,
+      attentionRate: attentionRate.toFixed(4),
+      entranceRate: entranceRate.toFixed(4),
+      attentionRatePercent: `${(attentionRate * 100).toFixed(2)}%`,
+      entranceRatePercent: `${(entranceRate * 100).toFixed(2)}%`,
+    });
+  }
 
   // Get title and content_group from first record (assuming they're consistent)
   const firstRecord = records[0];
@@ -89,16 +114,27 @@ export function assignPerformanceGrades(kpis: ContentPerformanceKPI[]): ContentP
 
 /**
  * Calculate aggregated KPIs for a content group
+ * 
+ * According to task_analysis.md:
+ * - Total Impressions: Sum from player_history.csv (PlayerHistory table) for all content_ids in the group
+ * - Attention Rate: (is_attention count from content_performance.csv) / (Total Impressions)
+ * - Entrance Rate: (is_entrance count from content_performance.csv) / (Total Impressions)
+ * 
+ * @param groupName - The content group name
+ * @param totalImpressions - Total impressions count from PlayerHistory table for all content_ids in this group
+ * @param records - ContentPerformance records for this group
  */
 export function calculateGroupKPI(
   groupName: string,
+  totalImpressions: number,
   records: ContentPerformance[]
 ): GroupPerformanceKPI {
-  const totalImpressions = records.length;
+  // Count attention and entrance from ContentPerformance records
   const attentionCount = records.filter((r) => r.is_attention === true).length;
   const entranceCount = records.filter((r) => r.is_entrance === true).length;
   const uniqueContentIds = new Set(records.map((r) => r.content_id));
 
+  // Calculate rates using total impressions from PlayerHistory as denominator
   const attentionRate = totalImpressions > 0 ? attentionCount / totalImpressions : 0;
   const entranceRate = totalImpressions > 0 ? entranceCount / totalImpressions : 0;
 

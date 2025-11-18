@@ -7,7 +7,7 @@ import type { NextRequest } from 'next/server';
  */
 export function middleware(request: NextRequest) {
   // Only apply CORS to API routes
-  if (!request.nextUrl.pathname.startsWith('/api/v1')) {
+  if (!request.nextUrl.pathname.startsWith('/api')) {
     return NextResponse.next();
   }
 

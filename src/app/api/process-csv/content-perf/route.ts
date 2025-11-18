@@ -11,8 +11,73 @@ import { ContentPerformance } from '@/src/entities/ContentPerformance';
 import { processContentPerformanceCSV } from '@/src/utils/csvProcessor';
 import { withApiLogging, logger, withQueryLogging } from '@/src/lib/logger';
 import { ApiResponse } from '@/src/lib/common/ApiResponse';
-import { ProcessCsvFileRequest, ContentPerformanceResponse } from '@/src/types/ProcessCsv.types';
+import { ProcessCsvFileRequest, ContentPerformanceResponse, CsvUploadMode } from '@/src/types/ProcessCsv.types';
 import { Nullable } from '@/src/lib/common/Nullable';
+import { upsertDatasetStatus } from '@/src/lib/datasetStatus';
+import { Repository } from 'typeorm';
+
+function parseUploadMode(value: FormDataEntryValue | string | null | undefined): CsvUploadMode {
+  if (typeof value === 'string' && value.toLowerCase() === 'append') {
+    return 'append';
+  }
+  return 'replace';
+}
+
+async function persistContentPerformanceRecords(
+  repo: Repository<ContentPerformance>,
+  uploadMode: CsvUploadMode,
+  contentRecords: Nullable<ContentPerformance[]>,
+  batchSize: number
+): Promise<number> {
+  if (uploadMode === 'replace') {
+    logger.info('Clearing existing content performance records (replace mode)');
+    await withQueryLogging('clear content performance records', () => repo.clear());
+  } else {
+    logger.info('Append mode: keeping existing content performance records');
+  }
+
+  if (contentRecords && contentRecords.length > 0) {
+    const totalRecords = contentRecords.length;
+    const recordsToInsert = contentRecords;
+
+    logger.debug('Inserting content performance records in batches', {
+      totalRecords,
+      batchSize,
+    });
+
+    for (let i = 0; i < totalRecords; i += batchSize) {
+      const batch = recordsToInsert.slice(i, i + batchSize);
+      const batchNumber = Math.floor(i / batchSize) + 1;
+      const totalBatches = Math.ceil(totalRecords / batchSize);
+
+      await withQueryLogging(
+        `insert content performance batch ${batchNumber}/${totalBatches}`,
+        () => repo.insert(batch)
+      );
+
+      logger.debug('Inserted batch of content performance records', {
+        batchNumber,
+        totalBatches,
+        batchSize: batch.length,
+        progress: `${Math.round(((i + batch.length) / totalRecords) * 100)}%`,
+      });
+    }
+
+    logger.info('Content performance records inserted successfully', {
+      totalRecords,
+    });
+
+    return totalRecords;
+  }
+
+  if (uploadMode === 'replace') {
+    logger.info('No valid records to insert, database cleared (replace mode)');
+  } else {
+    logger.info('No valid records to insert, existing data unchanged (append mode)');
+  }
+
+  return 0;
+}
 
 /**
  * Decode CSV content from request body
@@ -40,11 +105,13 @@ async function handlePOST(request: NextRequest): Promise<NextResponse<ApiRespons
     // Handle FormData (multipart/form-data) - no external library needed
     const contentType = request.headers.get('content-type') || '';
     let csvContent: string;
+    let uploadMode: CsvUploadMode = 'replace';
 
     if (contentType.includes('multipart/form-data')) {
       try {
         const formData = await request.formData();
         const file = formData.get('file');
+        uploadMode = parseUploadMode(formData.get('mode'));
 
         if (!file || !(file instanceof File)) {
           return NextResponse.json<ApiResponse<ContentPerformanceResponse>>(
@@ -103,6 +170,7 @@ async function handlePOST(request: NextRequest): Promise<NextResponse<ApiRespons
 
       // Decode CSV content (handles both plain string and base64)
       csvContent = decodeCsvContent(body.fileData);
+      uploadMode = parseUploadMode(body.mode);
       logger.info('Received CSV content via JSON', { contentLength: csvContent.length });
     }
 
@@ -112,60 +180,34 @@ async function handlePOST(request: NextRequest): Promise<NextResponse<ApiRespons
 
     // Process content performance CSV
     try {
-      logger.info('Processing content performance CSV');
+      logger.info('Processing content performance CSV', { mode: uploadMode });
+      
       const processed = await processContentPerformanceCSV(csvContent);
       contentRecords = processed.records;
       contentErrors = processed.errors;
 
-      if (contentRecords && contentRecords.length > 0) {
-        // SQLite has a limit on SQL variables (typically 999 or 32766)
-        // ContentPerformance has ~9 columns, so batch size should be: limit / columns
-        // Using 100 records per batch to be safe (100 * 9 = 900 variables < 999 limit)
-        const batchSize = 100; // Safe batch size for SQLite variable limit
-        const totalRecords = contentRecords.length;
-        const recordsToInsert = contentRecords; // Store reference to avoid null checks
-        
-        // Use a transaction for better performance and atomicity
-        await AppDataSource.transaction(async (transactionalEntityManager) => {
+      const batchSize = 100; // Safe batch size for SQLite variable limit
+
+      const processWithinRepo = async (repo: Repository<ContentPerformance>) => {
+        return persistContentPerformanceRecords(repo, uploadMode, contentRecords, batchSize);
+      };
+
+      try {
+        recordsProcessed = await AppDataSource.transaction(async (transactionalEntityManager) => {
           const transactionalRepo = transactionalEntityManager.getRepository(ContentPerformance);
-          
-          // Clear existing data before inserting new records (replace mode)
-          logger.info('Clearing existing content performance records');
-          await withQueryLogging(
-            'clear content performance records',
-            () => transactionalRepo.clear()
+          return processWithinRepo(transactionalRepo);
+        });
+      } catch (error) {
+        if (error instanceof Error && /no transaction is active/i.test(error.message)) {
+          logger.warn(
+            'SQLite transaction commit failed, retrying without transaction',
+            { mode: uploadMode, error: error.message }
           );
-          
-          logger.debug('Inserting content performance records in batches', {
-            totalRecords,
-            batchSize,
-          });
-
-          // Process in batches within transaction
-          for (let i = 0; i < totalRecords; i += batchSize) {
-            const batch = recordsToInsert.slice(i, i + batchSize);
-            const batchNumber = Math.floor(i / batchSize) + 1;
-            const totalBatches = Math.ceil(totalRecords / batchSize);
-
-            // Use insert() instead of save() for better bulk insert performance
-            await withQueryLogging(
-              `insert content performance batch ${batchNumber}/${totalBatches}`,
-              () => transactionalRepo.insert(batch)
-            );
-
-            logger.debug('Inserted batch of content performance records', {
-              batchNumber,
-              totalBatches,
-              batchSize: batch.length,
-              progress: `${Math.round((i + batch.length) / totalRecords * 100)}%`,
-            });
-          }
-        });
-        
-        recordsProcessed = totalRecords;
-        logger.info('Content performance records inserted successfully', {
-          totalRecords: recordsProcessed,
-        });
+          const repo = AppDataSource.getRepository(ContentPerformance);
+          recordsProcessed = await processWithinRepo(repo);
+        } else {
+          throw error;
+        }
       }
 
       if (contentErrors && contentErrors.length > 0) {
@@ -184,7 +226,11 @@ async function handlePOST(request: NextRequest): Promise<NextResponse<ApiRespons
       throw error;
     }
 
-    console.log('done');
+    console.log('contentErrors', contentErrors);
+
+    const contentRepo = AppDataSource.getRepository(ContentPerformance);
+    const databaseRecords = await contentRepo.count();
+    const datasetStatus = await upsertDatasetStatus('content-performance', databaseRecords);
 
     return NextResponse.json<ApiResponse<ContentPerformanceResponse>>({
       success: true,
@@ -194,6 +240,8 @@ async function handlePOST(request: NextRequest): Promise<NextResponse<ApiRespons
         totalRecords: contentRecords?.length || 0,
         recordsProcessed,
         errors: contentErrors && contentErrors.length > 0 ? contentErrors : null,
+        databaseRecords,
+        lastUpdatedAt: datasetStatus.last_updated_at ? datasetStatus.last_updated_at.toISOString() : null,
       },
     });
   } catch (error) {

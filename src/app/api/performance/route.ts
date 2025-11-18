@@ -4,6 +4,7 @@ import { StatusCodes } from 'http-status-codes';
 import { initializeDatabase } from '@/src/lib/db/database';
 import { AppDataSource } from '@/src/data-source';
 import { ContentPerformance } from '@/src/entities/ContentPerformance';
+import { PlayerHistory } from '@/src/entities/PlayerHistory';
 import {
   calculateContentKPI,
   assignPerformanceGrades,
@@ -120,34 +121,63 @@ async function handleGET(request: NextRequest): Promise<NextResponse<ApiResponse
     const queryParams = parseQueryParams(request);
     logger.debug('Performance API query parameters', queryParams);
 
-    // Fetch all content performance records
+    // Fetch data from both tables
     const contentRepo = AppDataSource.getRepository(ContentPerformance);
-    const allRecords = await contentRepo.find();
+    const playerRepo = AppDataSource.getRepository(PlayerHistory);
+    
+    const allContentRecords = await contentRepo.find();
+    const allPlayerRecords = await playerRepo.find();
 
-    if (allRecords.length === 0) {
+    // Count total impressions per content_id from PlayerHistory table
+    // According to task_analysis.md: "The number of times a content_id appears in player_history.csv represents the Total Impressions"
+    const impressionsByContentId = new Map<string, number>();
+    for (const record of allPlayerRecords) {
+      if (record.content_id) {
+        const currentCount = impressionsByContentId.get(record.content_id) || 0;
+        impressionsByContentId.set(record.content_id, currentCount + 1);
+      }
+    }
+
+    // If no player history data (impressions), return empty
+    // Performance KPIs require impressions as the denominator for calculating rates
+    if (impressionsByContentId.size === 0) {
       return NextResponse.json<ApiResponse<ContentPerformanceKPI[]>>({
         success: true,
         status_code: StatusCodes.OK,
-        message: 'No content performance data found',
+        message: 'No player history data found. Performance KPIs require impressions from player_history table.',
         data: [],
       });
     }
 
-    // Group records by content_id
-    const recordsByContentId = new Map<string, ContentPerformance[]>();
-    for (const record of allRecords) {
+    // Group ContentPerformance records by content_id
+    const contentRecordsByContentId = new Map<string, ContentPerformance[]>();
+    for (const record of allContentRecords) {
       const contentId = record.content_id;
-      if (!recordsByContentId.has(contentId)) {
-        recordsByContentId.set(contentId, []);
+      if (!contentRecordsByContentId.has(contentId)) {
+        contentRecordsByContentId.set(contentId, []);
       }
-      recordsByContentId.get(contentId)!.push(record);
+      contentRecordsByContentId.get(contentId)!.push(record);
     }
 
+    // Get all unique content_ids from PlayerHistory table (impressions are required)
+    // Only calculate KPIs for content_ids that have impressions
+    const allContentIds = new Set<string>();
+    impressionsByContentId.forEach((_, contentId) => allContentIds.add(contentId));
+
     // Calculate KPIs for each content_id
+    // Combine data from both tables as per task_analysis.md requirements
+    // Only include content_ids that have impressions (required for KPI calculation)
     const kpis: ContentPerformanceKPI[] = [];
-    for (const [contentId, records] of recordsByContentId.entries()) {
-      const kpi = calculateContentKPI(contentId, records);
+    for (const contentId of allContentIds) {
+      const totalImpressions = impressionsByContentId.get(contentId) || 0;
+      const contentRecords = contentRecordsByContentId.get(contentId) || [];
+      
+      // Only include content_ids that have impressions (totalImpressions > 0)
+      // Without impressions, rates cannot be calculated meaningfully
+      if (totalImpressions > 0) {
+        const kpi = calculateContentKPI(contentId, totalImpressions, contentRecords);
       kpis.push(kpi);
+      }
     }
 
     // Assign performance grades based on entrance_rate percentiles
