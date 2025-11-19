@@ -18,7 +18,7 @@ Data ingestion and KPI API for the Space Vision signage dashboard. The service e
    npm install
    ```
 3. **Optional configuration**
-   - Create `.env.local` when overriding defaults (for example, `CORS_ALLOWED_ORIGINS=http://localhost:8080`).
+   - Create `.env` when overriding defaults (for example, `CORS_ALLOWED_ORIGINS=http://localhost:8080`).
 4. **Start the development server**
    ```powershell
    npm run dev
@@ -31,27 +31,6 @@ Data ingestion and KPI API for the Space Vision signage dashboard. The service e
    npm run start
    ```
    - This compiles the Next.js App Router bundle and serves it via the same SQLite-backed APIs.
-
-### Docker-based workflow (no custom image required)
-
-The repository does not include a Dockerfile because the stack can run directly inside the official Node image. The following command mounts the repository inside a container, installs dependencies, and starts `next dev`:
-
-```powershell
-docker run --rm -it ^
-  -p 3000:3000 ^
-  -e CORS_ALLOWED_ORIGINS="http://localhost:3000" ^
-  -v ${PWD}:/app ^
-  -w /app ^
-  node:20-bullseye-slim ^
-  bash -lc "npm install && npm run dev"
-```
-
-Recommendations:
-
-- Mount `space-vision.sqlite` through the same bind mount to ensure data persists between runs.
-- For production-like smoke tests, replace `npm run dev` with `npm run build && npm run start`.
-
----
 
 ## 2. Architecture & technology rationale
 
@@ -89,13 +68,13 @@ CSV upload → process-csv route → csvProcessor → TypeORM entities → SQLit
 
 ## 3. API surface & data ingestion
 
-| Endpoint                                         | Method          | Purpose                                                                                                         |
-| ------------------------------------------------ | --------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `/api/process-csv/content-perf`                  | POST            | Accepts `multipart/form-data` or JSON (`fileData`) for `content_performance.csv`. Supports `mode=replace        | append`.                                        |
-| `/api/process-csv/player-history`                | POST            | Same contract for `player_history.csv`.                                                                         |
-| `/api/dataset-status?dataset=content-performance | player-history` | GET                                                                                                             | Returns record counts + last update timestamps. |
-| `/api/performance`                               | GET             | Returns per-content KPIs with sorting (`sortBy`, `order`), grade filtering, and pagination (`limit`, `offset`). |
-| `/api/performance/group`                         | GET             | Aggregates KPIs by `content_group` with the same sorting/pagination story.                                      |
+| Endpoint                          | Method | Purpose                                                                                                                         |
+| --------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/process-csv/content-perf`   | POST   | Accepts `multipart/form-data` or JSON (`fileData`) for `content_performance.csv`. Supports `mode=replace` or `mode=append`      |
+| `/api/process-csv/player-history` | POST   | Same contract for `player_history.csv`.                                                                                         |
+| `/api/dataset-status`             | GET    | Returns record counts and last update timestamps for the `dataset` query parameter (`content-performance` or `player-history`). |
+| `/api/performance`                | GET    | Returns per-content KPIs with sorting (`sortBy`, `order`), grade filtering, and pagination (`limit`, `offset`).                 |
+| `/api/performance/group`          | GET    | Aggregates KPIs by `content_group` with the same sorting/pagination story.                                                      |
 
 Example upload (JSON fallback):
 
@@ -141,9 +120,3 @@ Each visualization consumes the same KPI payloads, which eliminates discrepancie
 - **Empty analytics responses** – Both datasets must be loaded because KPIs join `PlayerHistory` impressions with `ContentPerformance` flags. Use the Dataset Status API to confirm row counts.
 
 ---
-
-## Next steps
-
-- Add a production-ready Dockerfile (multi-stage Node builder with a slim runtime layer) when deployment needs arise.
-- Replace `synchronize: true` with migrations before shipping to production to avoid accidental schema drift.
-- Introduce background job orchestration (for example, BullMQ or Temporal) for larger CSVs once datasets exceed single-process capacity.
