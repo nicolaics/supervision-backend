@@ -14,7 +14,6 @@ Data ingestion and KPI API for the Space Vision signage dashboard. The service e
    - No external database is required because the repository already contains `space-vision.sqlite`.
 2. **Clone and install**
    ```powershell
-   cd D:\Work\SpaceVision\InterviewTasks\backend
    npm install
    ```
 3. **Optional configuration**
